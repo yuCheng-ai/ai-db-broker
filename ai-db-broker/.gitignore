@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.ai-db/
+data/
+.env
+.env.*
+*.log
