@@ -14,32 +14,66 @@ It is not an MCP server, not a database client, not an HTTP service, and not a d
 4. AI tools operate only through connection names, for example `--conn local`.
 5. Each CLI run loads config, connects temporarily, performs one operation, and exits.
 
-## Install
+## Quick Start
 
 ```bash
 npm install
 npm run build
 ```
 
-For local development, run the built CLI directly:
+Use the built CLI directly while developing:
 
 ```bash
+npm run build
 node dist/index.js --help
 ```
 
-When installed as a package, use:
+When installed as a package, the command is:
 
 ```bash
 ai-db --help
 ```
 
-## Initialize
+## Basic Workflow
+
+Run these commands from your project root.
 
 ```bash
-ai-db init
+# 1. Create local AI DB Broker files
+node dist/index.js init
+
+# 2. Register a human-approved connection
+node dist/index.js connect local --type sqlite --database ./data/app.db --mode dev
+
+# 3. Check local setup
+node dist/index.js doctor --conn local
+
+# 4. Pick a template
+node dist/index.js templates
+
+# 5. Inspect current schema only
+node dist/index.js inspect --conn local
+
+# 6. Create a plan for missing tables
+node dist/index.js plan --conn local --template ai-chat-app
+
+# 7. Review the generated SQL before applying
+node dist/index.js plans --conn local
+node dist/index.js show-plan --conn local --plan latest
+
+# 8. Dry-run the apply
+node dist/index.js apply --conn local --plan latest --dry-run
+
+# 9. Apply the plan
+node dist/index.js apply --conn local --plan latest
+
+# 10. Backup when needed
+node dist/index.js backup --conn local
 ```
 
-This creates:
+## Initialize
+
+`init` creates:
 
 ```text
 .ai-db/
@@ -48,6 +82,12 @@ This creates:
 ├── backups/
 ├── logs/
 └── migrations/
+```
+
+Command:
+
+```bash
+ai-db init
 ```
 
 ## Configure Connections
@@ -71,6 +111,8 @@ ai-db connect pg-dev \
   --password-env PG_DEV_PASSWORD \
   --mode dev
 ```
+
+AI tools should only receive the connection name, such as `local` or `pg-dev`. They should not receive passwords or raw DSNs.
 
 Example `.ai-db/config.json`:
 
@@ -102,8 +144,13 @@ Example `.ai-db/config.json`:
 ai-db init
 ai-db connect <name>
 ai-db connections
+ai-db doctor [--conn <name>]
 ai-db inspect --conn <name>
+ai-db templates
 ai-db plan --conn <name> --template <template>
+ai-db plans [--conn <name>]
+ai-db show-plan --conn <name> --plan latest
+ai-db apply --conn <name> --plan latest --dry-run
 ai-db apply --conn <name> --plan latest
 ai-db backup --conn <name>
 ai-db reset --conn <name> --dev
@@ -119,6 +166,25 @@ ai-agent-app
 
 Each template includes separate SQLite and PostgreSQL SQL definitions.
 
+## Doctor
+
+Use `doctor` before asking AI tools to operate on a database:
+
+```bash
+ai-db doctor
+ai-db doctor --conn local
+```
+
+It checks:
+
+- `.ai-db` directory structure
+- config validity
+- connection mode and type
+- SQLite database path
+- PostgreSQL `passwordEnv`
+- PostgreSQL `pg_dump` availability for backup
+- schema inspection connectivity when `--conn` is provided
+
 ## Planning and Applying
 
 The first version intentionally avoids complex schema diffing:
@@ -132,9 +198,19 @@ Example:
 ```bash
 ai-db inspect --conn local
 ai-db plan --conn local --template ai-chat-app
+ai-db show-plan --conn local --plan latest
+ai-db apply --conn local --plan latest --dry-run
 ai-db apply --conn local --plan latest
 ai-db inspect --conn local
 ```
+
+`show-plan` prints the SQL that will be executed. Use `--summary` to hide SQL and show only metadata:
+
+```bash
+ai-db show-plan --conn local --plan latest --summary
+```
+
+`apply --dry-run` validates the selected plan and safety rules, then exits without executing SQL.
 
 ## Backup
 
@@ -173,6 +249,7 @@ Rules:
 - `inspect` reads schema only and never reads business rows.
 - `prod` is read-only by default.
 - `apply` against `prod` is refused unless `--allow-prod` is passed.
+- `apply --dry-run` validates a plan without executing SQL.
 - Destructive SQL is refused by default:
   - `DROP DATABASE`
   - `DROP TABLE`
@@ -187,9 +264,19 @@ Rules:
 - Do not read or request raw passwords.
 - Do not write plaintext passwords into `.ai-db/config.json`.
 - Use `inspect` before planning changes.
-- Use `plan` and review the plan file before `apply`.
+- Use `plan`, then `show-plan`, then `apply --dry-run`, then `apply`.
 - Do not run `apply` on `prod` unless a human explicitly approved `--allow-prod`.
 - Do not run `reset` unless the connection is `dev` or `test` and the command includes `--dev`.
+
+## How This Differs From DBHub
+
+AI DB Broker is intentionally not DBHub.
+
+- DBHub is a database MCP server.
+- DBHub can run as an HTTP server and expose MCP/workbench endpoints.
+- DBHub lets MCP clients execute SQL through tools such as `execute_sql`.
+- AI DB Broker is a plain CLI. It runs one command, performs one operation, and exits.
+- AI DB Broker does not start an MCP server, does not expose HTTP, and does not provide an arbitrary SQL client.
 
 ## Acceptance Flow
 
@@ -199,8 +286,13 @@ npm run build
 node dist/index.js init
 node dist/index.js connect local --type sqlite --database ./data/app.db --mode dev
 node dist/index.js connections
+node dist/index.js doctor --conn local
 node dist/index.js inspect --conn local
+node dist/index.js templates
 node dist/index.js plan --conn local --template ai-chat-app
+node dist/index.js plans --conn local
+node dist/index.js show-plan --conn local --plan latest --summary
+node dist/index.js apply --conn local --plan latest --dry-run
 node dist/index.js apply --conn local --plan latest
 node dist/index.js inspect --conn local
 node dist/index.js backup --conn local

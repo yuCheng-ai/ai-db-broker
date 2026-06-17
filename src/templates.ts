@@ -3,7 +3,7 @@ import type { Dialect } from "./types";
 export const TEMPLATE_NAMES = ["ai-chat-app", "ai-image-app", "ai-agent-app"] as const;
 export type TemplateName = (typeof TEMPLATE_NAMES)[number];
 
-interface TemplateDefinition {
+export interface TemplateDefinition {
   name: TemplateName;
   tables: string[];
   sql: Record<Dialect, Record<string, string>>;
@@ -482,6 +482,10 @@ export function getTemplate(name: string): TemplateDefinition {
     throw new Error(`Unknown template "${name}". Available templates: ${TEMPLATE_NAMES.join(", ")}`);
   }
   return templates[name];
+}
+
+export function listTemplates(): TemplateDefinition[] {
+  return TEMPLATE_NAMES.map((name) => templates[name]);
 }
 
 export function isTemplateName(name: string): name is TemplateName {

@@ -4,9 +4,11 @@ import path from "node:path";
 import { backupConnection } from "./backup";
 import { getConnection, initAiDb, loadConfig, upsertConnection } from "./config";
 import { inspectConnection } from "./db";
-import { applyPlan, createPlan } from "./plans";
+import { hasDoctorFailures, runDoctor } from "./doctor";
+import { applyPlan, createPlan, listPlans, readPlan } from "./plans";
 import { resetConnection } from "./reset";
 import { redactSecrets } from "./security";
+import { listTemplates } from "./templates";
 import type { ConnectionMode, DbConnection } from "./types";
 
 const program = new Command();
@@ -50,6 +52,20 @@ program
   }));
 
 program
+  .command("doctor")
+  .description("Check local configuration, connection readiness, and backup prerequisites.")
+  .option("--conn <name>", "Connection name to probe")
+  .action(run(async (options: Partial<ConnOptions>) => {
+    const checks = await runDoctor(options.conn);
+    for (const check of checks) {
+      console.log(`[${check.status.toUpperCase()}] ${check.name}: ${check.message}`);
+    }
+    if (hasDoctorFailures(checks)) {
+      process.exitCode = 1;
+    }
+  }));
+
+program
   .command("inspect")
   .description("Inspect database schema only; never reads business data.")
   .requiredOption("--conn <name>", "Connection name")
@@ -57,6 +73,16 @@ program
     const connection = getConnection(options.conn);
     const result = await inspectConnection(options.conn, connection);
     console.log(JSON.stringify(result, null, 2));
+  }));
+
+program
+  .command("templates")
+  .description("List built-in schema templates and their tables.")
+  .action(run(() => {
+    for (const template of listTemplates()) {
+      console.log(`${template.name}`);
+      console.log(`  tables: ${template.tables.join(", ")}`);
+    }
   }));
 
 program
@@ -73,14 +99,67 @@ program
   }));
 
 program
+  .command("plans")
+  .description("List saved plans from .ai-db/plans.")
+  .option("--conn <name>", "Only show plans for a connection")
+  .action(run((options: Partial<ConnOptions>) => {
+    const plans = listPlans(options.conn);
+    if (plans.length === 0) {
+      console.log(options.conn ? `No plans found for connection "${options.conn}"` : "No plans found");
+      return;
+    }
+    for (const plan of plans) {
+      console.log(`${plan.fileName}`);
+      console.log(`  conn=${plan.connection} template=${plan.template} dialect=${plan.dialect}`);
+      console.log(`  created=${plan.createdAt} statements=${plan.statements} skipped=${plan.skippedTables}`);
+    }
+  }));
+
+program
+  .command("show-plan")
+  .description("Print a saved plan for human review before apply.")
+  .requiredOption("--conn <name>", "Connection name")
+  .requiredOption("--plan <plan>", "Plan id, file name, path, or latest")
+  .option("--summary", "Only show metadata and table lists, not SQL", false)
+  .action(run((options: ShowPlanOptions) => {
+    const result = readPlan(options.conn, options.plan);
+    const plan = result.plan;
+    console.log(`Plan: ${path.basename(result.filePath)}`);
+    console.log(`Connection: ${plan.connection}`);
+    console.log(`Template: ${plan.template}`);
+    console.log(`Dialect: ${plan.dialect}`);
+    console.log(`Created: ${plan.createdAt}`);
+    console.log(`Tables to create: ${plan.statements.map((statement) => statement.table).join(", ") || "(none)"}`);
+    console.log(`Tables skipped: ${plan.skippedTables.join(", ") || "(none)"}`);
+
+    if (!options.summary) {
+      for (const [index, statement] of plan.statements.entries()) {
+        console.log("");
+        console.log(`-- ${index + 1}. ${statement.table}`);
+        console.log(statement.sql);
+      }
+    }
+  }));
+
+program
   .command("apply")
   .description("Apply a plan from .ai-db/plans.")
   .requiredOption("--conn <name>", "Connection name")
   .requiredOption("--plan <plan>", "Plan id, file name, path, or latest")
   .option("--allow-prod", "Allow apply against a prod connection", false)
+  .option("--dry-run", "Validate and preview the plan without executing SQL", false)
   .action(run(async (options: ApplyOptions) => {
     const connection = getConnection(options.conn);
-    const result = await applyPlan(options.conn, connection, options.plan, options.allowProd);
+    const result = await applyPlan(options.conn, connection, options.plan, {
+      allowProd: options.allowProd,
+      dryRun: options.dryRun,
+    });
+    if (result.dryRun) {
+      console.log(`Dry run passed for ${path.basename(result.filePath)}`);
+      console.log(`Statements planned: ${result.plan.statements.length}`);
+      console.log("No SQL was executed.");
+      return;
+    }
     console.log(`Applied plan ${path.basename(result.filePath)}`);
     console.log(`Statements applied: ${result.appliedCount}`);
   }));
@@ -122,6 +201,12 @@ interface PlanOptions extends ConnOptions {
 interface ApplyOptions extends ConnOptions {
   plan: string;
   allowProd: boolean;
+  dryRun: boolean;
+}
+
+interface ShowPlanOptions extends ConnOptions {
+  plan: string;
+  summary: boolean;
 }
 
 interface ResetOptions extends ConnOptions {

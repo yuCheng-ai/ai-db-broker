@@ -81,12 +81,59 @@ export function readPlan(connectionName: string, planArg: string): { plan: PlanF
   return { plan: validatePlan(readJson(filePath), filePath, connectionName), filePath };
 }
 
-export async function applyPlan(connectionName: string, connection: DbConnection, planArg: string, allowProd: boolean): Promise<{
+export interface PlanSummary {
+  id: string;
+  connection: string;
+  template: string;
+  dialect: string;
+  createdAt: string;
+  fileName: string;
+  statements: number;
+  skippedTables: number;
+}
+
+export function listPlans(connectionName?: string): PlanSummary[] {
+  const plansDir = aiDbPath("plans");
+  if (!fs.existsSync(plansDir)) {
+    return [];
+  }
+
+  const plans: PlanSummary[] = [];
+  for (const entry of fs.readdirSync(plansDir)) {
+    if (!entry.endsWith(".json")) {
+      continue;
+    }
+    const filePath = path.join(plansDir, entry);
+    try {
+      const plan = validatePlan(readJson(filePath), filePath, connectionName);
+      plans.push({
+        id: plan.id,
+        connection: plan.connection,
+        template: plan.template,
+        dialect: plan.dialect,
+        createdAt: plan.createdAt,
+        fileName: entry,
+        statements: plan.statements.length,
+        skippedTables: plan.skippedTables.length,
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  return plans.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function applyPlan(connectionName: string, connection: DbConnection, planArg: string, options: {
+  allowProd: boolean;
+  dryRun: boolean;
+}): Promise<{
   plan: PlanFile;
   filePath: string;
   appliedCount: number;
+  dryRun: boolean;
 }> {
-  if (connection.mode === "prod" && !allowProd) {
+  if (connection.mode === "prod" && !options.allowProd) {
     throw new Error("Refusing to apply to prod connection without --allow-prod");
   }
 
@@ -97,6 +144,19 @@ export async function applyPlan(connectionName: string, connection: DbConnection
 
   for (const statement of plan.statements) {
     assertSafeSql(statement.sql);
+  }
+
+  if (options.dryRun) {
+    logOperation({
+      operation: "apply:dry-run",
+      connection: connectionName,
+      mode: connection.mode,
+      details: {
+        plan: path.basename(filePath),
+        plannedTables: plan.statements.map((statement) => statement.table),
+      },
+    });
+    return { plan, filePath, appliedCount: 0, dryRun: true };
   }
 
   const adapter = createAdapter(connection, "write");
@@ -112,7 +172,7 @@ export async function applyPlan(connectionName: string, connection: DbConnection
         appliedTables: plan.statements.map((statement) => statement.table),
       },
     });
-    return { plan, filePath, appliedCount: plan.statements.length };
+    return { plan, filePath, appliedCount: plan.statements.length, dryRun: false };
   } finally {
     await adapter.disconnect();
   }
@@ -146,14 +206,14 @@ function readLatestPlan(connectionName: string): { plan: PlanFile; filePath: str
   return latest;
 }
 
-function validatePlan(value: unknown, filePath: string, connectionName: string): PlanFile {
+function validatePlan(value: unknown, filePath: string, connectionName?: string): PlanFile {
   if (!isRecord(value)) {
     throw new Error(`Plan ${filePath} must be a JSON object`);
   }
   if (value.version !== 1) {
     throw new Error(`Plan ${filePath} version must be 1`);
   }
-  if (value.connection !== connectionName) {
+  if (connectionName !== undefined && value.connection !== connectionName) {
     throw new Error(`Plan ${filePath} is for connection "${String(value.connection)}", not "${connectionName}"`);
   }
   if (value.dialect !== "sqlite" && value.dialect !== "postgres") {
